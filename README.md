@@ -64,20 +64,43 @@ python -m voice_interaction echo         # the example application
 
 ### Windows
 
-Windows needs no extra system libraries — the `sounddevice` wheel bundles PortAudio.
+Windows needs no extra system libraries — the `sounddevice` wheel bundles PortAudio. What it
+does need is a **real Python installation**: a fresh Windows 11 has none, and the `python` /
+`python3` you find on `PATH` are Microsoft Store stubs that only print *"Python was not found"*
+(and `py` may not exist at all). Install one first, either way:
 
 ```powershell
-py -3.11 -m venv .venv
-.venv\Scripts\activate
+winget install Python.Python.3.11        # gives you py, python and pip
+```
+
+```powershell
+winget install astral-sh.uv              # alternative: uv brings its own Python
+uv python install 3.11
+```
+
+Then, from the project directory:
+
+```powershell
+py -3.11 -m venv .venv                   # with uv: uv venv --seed --python 3.11 .venv
+.\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 python -m voice_interaction download --lang all
 python -m voice_interaction selftest
 python -m voice_interaction echo
 ```
 
-Use Python 3.9–3.12. If `echo` picks the wrong device, list them with
-`python -m voice_interaction devices` and pass `--input-device "Headset"` — name matching is
-more stable than indices, which shuffle between reboots.
+Tested on Windows 11 with Python 3.11; use Python 3.9–3.12. Everything is pure wheels, no
+compiler and no admin rights beyond installing Python itself.
+
+- **Activation is the usual stumbling block.** In PowerShell the script is `Activate.ps1` and the
+  leading `.\` is required; if it is refused, see Troubleshooting. In `cmd.exe` use
+  `.venv\Scripts\activate.bat`. You can also skip activation entirely and call
+  `.venv\Scripts\python.exe -m voice_interaction ...` directly — that is what the commands above
+  do under the hood.
+- If `echo` picks the wrong device, list them with `python -m voice_interaction devices` and pass
+  `--input-device "Headset"` — name matching is more stable than indices, which shuffle between
+  reboots. Windows lists each device once per host API (MME, DirectSound, WASAPI, WDM-KS); MME
+  truncates names to 31 characters, so match on the first few words.
 
 ---
 
@@ -328,6 +351,22 @@ you are on the right language — German speech through the English model produc
 nonsense.
 
 **`OSError: PortAudio library not found` (Linux).** `sudo apt install libportaudio2`.
+
+**`py` is not recognized, or `python` prints "Python was not found; run without arguments to
+install from the Microsoft Store" (Windows).** No Python is installed — `python.exe` and
+`python3.exe` on the `PATH` of a fresh Windows are Store stubs, not interpreters. Install one
+(`winget install Python.Python.3.11`) and open a new terminal; optionally turn the stubs off
+under *Settings > Apps > Advanced app settings > App execution aliases*.
+
+**`Activate.ps1 cannot be loaded because running scripts is disabled on this system`
+(Windows).** PowerShell's execution policy. Either
+`Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`, or use `cmd.exe` with
+`.venv\Scripts\activate.bat`, or skip activation and run `.venv\Scripts\python.exe -m
+voice_interaction ...`.
+
+**`No module named pip` inside a venv made with `uv venv` (Windows or Linux).** uv does not put
+pip in the venv unless asked. Use `uv venv --seed`, or install with `uv pip install -r
+requirements.txt` instead.
 
 **`piper-tts` won't install on the Nano.** JetPack 4.6 ships Python 3.6; piper needs ≥ 3.9. See
 the deadsnakes instructions the install script prints.
