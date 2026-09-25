@@ -1,149 +1,306 @@
-# voice-synth
-
-Lightweight text-to-speech service built on [Piper](https://github.com/rhasspy/piper) (MIT-licensed,
-ONNX Runtime CPU inference). Designed to run alongside Vosk (STT) and other workloads on a
-Jetson Nano P3450 (2/4GB, 2022 model) without starving them of CPU, RAM, or GPU.
-
-## Why Piper
-
-| Engine | License | RAM | Speed on Cortex-A57 | GPU needed | Quality |
-|---|---|---|---|---|---|
-| **Piper** | MIT | ~150-300MB per voice | RTF ~0.1-0.3 (faster than real time) | No | Good (neural, VITS-derived) |
-| Coqui TTS (VITS/XTTS) | MPL-2.0 / non-commercial for some models | 1GB+ (PyTorch) | Often slower than real time on A57 | Recommended | Very good/excellent |
-| eSpeak-NG | GPL-3.0 | <20MB | Instant | No | Robotic |
-| Mimic3 | AGPL/MIT mix, deprecated by Rhasspy in favor of Piper | similar to Piper but heavier runtime | slower | No | Good |
-
-Piper wins here because:
-- **No GPU dependency** — leaves the Nano's Maxwell GPU free for camera/vision pipelines or CUDA-accelerated
-  Vosk/other models, and avoids TensorRT/CUDA version-matching headaches.
-- **Small footprint** — ONNX Runtime + a single small model, no PyTorch/TensorFlow runtime to load.
-- **Fast enough on CPU alone** — small/medium voice models synthesize faster than real-time on 4x Cortex-A57.
-- **Fully free/open** — MIT license for the engine, voices are MIT or CC-BY/CC0 (check each voice's card).
-
-## Resource budget on a Jetson Nano (4GB recommended, 2GB workable)
-
-The Nano has 4 CPU cores total. Assume Vosk (streaming STT) and other services are also running.
-This project defaults to a conservative budget:
-
-- **1 persistent Piper process**, model loaded once (avoids repeated ~100-300ms model-load cost per request).
-- **`PIPER_NUM_THREADS=2`** by default — caps ONNX Runtime intra-op threads so Piper doesn't compete for
-  all 4 cores against Vosk's own recognizer thread(s). Tune via env var (see below).
-- **One voice model resident in RAM at a time** (~50-150MB for `low`/`medium` quality `en_US` voices).
-  Swapping voices reloads the model — avoid doing this per-request in production.
-- **Request queue, not thread-per-request** — synthesis requests are serialized through a single worker
-  so peak RAM/CPU stays bounded and predictable instead of spiking with concurrent synthesis.
-- Prefer `x_low` or `medium` quality voice variants over `high` — `high` models are ~4x larger and slower
-  for a quality gain that matters less on a robot/embedded speaker than latency and headroom for Vosk.
-
-Typical numbers on Jetson Nano 4GB, `en_US-lessac-medium`, 2 threads: model load ~1-2s (once, at startup),
-synthesis RTF (real-time factor) commonly 0.15-0.4 — i.e. a 3s sentence synthesizes in well under 1s.
-
-## Install (on the Jetson, aarch64 Ubuntu/JetPack)
-
-```bash
-./scripts/install_jetson.sh
-```
-
-This creates a venv, installs `piper-tts` + `onnxruntime` (both have aarch64 wheels on PyPI), and
-downloads a default small English voice. See the script for details/overrides.
-
-## Install (dev machine, any platform)
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-python -m voice_synth.cli download en_US-lessac-medium
-```
-
-## Usage
-
-### CLI (quick test, no server)
-
-```bash
-python -m voice_synth.cli speak "Hello from the Jetson Nano." --out hello.wav
-aplay hello.wav   # or paplay, depending on your audio stack
-```
-
-### Server (persistent process, HTTP API)
-
-```bash
-PIPER_NUM_THREADS=2 python -m voice_synth.server
-```
-
-Then:
-
-```bash
-curl -X POST http://localhost:5002/synthesize \
-  -H 'Content-Type: application/json' \
-  -d '{"text": "Hello from the Jetson Nano."}' \
-  --output out.wav
-```
-
-`GET /health` reports the loaded voice and queue depth.
-
-### Config (env vars)
-
-| Var | Default | Purpose |
-|---|---|---|
-| `PIPER_VOICE` | `en_US-lessac-medium` | Voice model name (must be downloaded first) |
-| `PIPER_MODELS_DIR` | `./models` | Where `.onnx`/`.onnx.json` voice files live |
-| `PIPER_NUM_THREADS` | `2` | ONNX Runtime intra-op threads — keep low to leave cores for Vosk |
-| `PIPER_HOST` / `PIPER_PORT` | `0.0.0.0` / `5002` | HTTP server bind address |
-
-## Running alongside Vosk
-
-- Keep `PIPER_NUM_THREADS` + Vosk's own thread count ≤ number of physical cores (4 on Nano). E.g.
-  Piper=2, Vosk=2 is a safe split; both are usually idle waiting on I/O/audio buffers rather than
-  pegging CPU continuously, so some oversubscription is fine in practice — measure with `tegrastats`.
-- Run both as separate systemd services (see `systemd/`) rather than in one process, so either can be
-  restarted independently and you can see per-service CPU/RSS in `tegrastats` / `top`.
-- Don't load multiple Piper voices simultaneously unless you have RAM to spare (each resident voice
-  model costs its own ONNX Runtime session + weights, roughly 50-150MB depending on quality tier).
-
-## Voice models
-
-Grab additional voices from the official Piper voice samples page and place the `.onnx` +
-`.onnx.json` pair into `PIPER_MODELS_DIR`. All are free to use; check individual voice cards for
-attribution requirements (most are MIT or CC0, a few are CC-BY which just requires credit).
-
-### German
-
-Works out of the box, same download/CLI/server flow, just point `PIPER_VOICE` at a German voice
-name:
-
-```bash
-python -m voice_synth.cli download de_DE-thorsten-medium
-python -m voice_synth.cli speak "Hallo, hier spricht der Jetson Nano." --voice de_DE-thorsten-medium
-```
-
-```bash
-PIPER_VOICE=de_DE-thorsten-medium python -m voice_synth.server
-```
-
-Available German (`de_DE`) voices, smallest/fastest to largest/best quality — pick one:
-
-| Voice | Quality | Size | Notes |
-|---|---|---|---|
-| `de_DE-eva_k-x_low` | x_low | ~21MB | Smallest/fastest, noticeably robotic |
-| `de_DE-thorsten-low` | low | ~63MB | Good speed/quality tradeoff |
-| `de_DE-karlsson-low`, `de_DE-kerstin-low`, `de_DE-pavoque-low`, `de_DE-ramona-low` | low | ~63MB | Alternative voices/speakers, same tier |
-| `de_DE-thorsten-medium` | medium | ~63MB | Recommended default — same tier as the English default above |
-| `de_DE-thorsten_emotional-medium` | medium | ~77MB | Multi-speaker, 8 emotional styles (`speaker_id`) |
-| `de_DE-mls-medium` | medium | ~77MB | 236 speakers |
-| `de_DE-thorsten-high` | high | ~114MB | Best quality, slower — usually not worth it on a Nano |
-
-Tested on this repo's dev setup: `de_DE-thorsten-medium` downloads and synthesizes correctly
-through both the CLI and the HTTP server, same resource profile as the English medium voice
-(~1.5s including model load for a short sentence, ~210MB RSS once loaded).
-
-Only one voice is loaded per running server process (see resource budget above) — to serve both
-English and German, run two `voice-synth` processes on different ports (e.g. `PIPER_PORT=5002` /
-`5003`), each with its own systemd unit and thread cap, rather than hot-swapping voices per
-request.
-
-## systemd
-
-See [`systemd/voice-synth.service`](systemd/voice-synth.service) for a unit file that runs the
-server with a capped thread count and restarts on failure.
 # voice-interaction
+
+Offline speech interaction for a robot: **speech → text → speech**, in German and English,
+running entirely on the CPU. Built for a **Jetson Nano P3450** that also has to run other
+workloads, and developed/tested on ordinary Linux and Windows machines.
+
+Nothing leaves the device — no cloud, no API keys, no network at runtime.
+
+```
+  microphone ──► endpointer ──► Vosk (STT) ──► your logic ──► Piper (TTS) ──► speaker
+   16 kHz        "pause of        German/         (here:         German/
+   mono          0.8 s ends      English          echo it        English
+                 the turn"       offline         back)          offline
+```
+
+| Stage | Engine | License | Why |
+|---|---|---|---|
+| Speech → text | [Vosk](https://alphacephei.com/vosk/) small models | Apache-2.0 | Streaming, offline, 45 MB models, runs on a Pi-class CPU |
+| Text → speech | [Piper](https://github.com/OHF-voice/piper1-gpl) | GPL-3.0-or-later | Neural quality, ONNX-on-CPU, no GPU and no PyTorch |
+| Audio I/O | [sounddevice](https://python-sounddevice.readthedocs.io/)/PortAudio | MIT | One API for ALSA, Windows and the Jetson image |
+
+Both engines run on the **CPU only**, deliberately: the Nano's Maxwell GPU stays free for
+vision work, and there is no CUDA/TensorRT version matching to maintain.
+
+---
+
+## Hardware
+
+**The Jetson Nano P3450 has no analog audio input.** Its only onboard audio path is HDMI out.
+You need one of:
+
+- a **USB headset** (simplest — mic and speaker in one device, and the headset physically
+  prevents the robot from hearing its own voice),
+- a **USB microphone** plus HDMI/USB speakers,
+- a USB audio interface, or an I2S MEMS mic on the 40-pin header (extra driver work).
+
+Also worth knowing:
+
+- **4 GB Nano recommended.** Both models resident need ~460 MB (measured, see below). On a 2 GB
+  Nano run headless (no desktop) and add swap.
+- A **USB 2.0 port** is fine; audio needs almost no bandwidth.
+- Mic placement matters far more than model size for recognition accuracy. A cheap mic 30 cm from
+  the speaker beats a good mic 3 m away.
+
+---
+
+## Quick start
+
+### Linux and Jetson Nano
+
+```bash
+./scripts/install_jetson.sh all      # de + en; use "de" or "en" for just one
+```
+
+The script checks the Python version, installs PortAudio, creates the venv, and downloads the
+models (~90 MB per language). Then:
+
+```bash
+source .venv/bin/activate
+python -m voice_interaction selftest     # works without any microphone
+python -m voice_interaction devices      # find your mic/speaker
+python -m voice_interaction echo         # the example application
+```
+
+### Windows
+
+Windows needs no extra system libraries — the `sounddevice` wheel bundles PortAudio.
+
+```powershell
+py -3.11 -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+python -m voice_interaction download --lang all
+python -m voice_interaction selftest
+python -m voice_interaction echo
+```
+
+Use Python 3.9–3.12. If `echo` picks the wrong device, list them with
+`python -m voice_interaction devices` and pass `--input-device "Headset"` — name matching is
+more stable than indices, which shuffle between reboots.
+
+---
+
+## The example application: `echo`
+
+The user speaks; once a pause of `--silence-sec` (default 0.8 s) has elapsed, whatever was
+understood is **spoken back**. That is the whole app — it exists to prove every link in the chain
+works, and it is the smoke test to run first on new hardware.
+
+```
+$ python -m voice_interaction echo --lang de
+Models loaded in 1.7s (Vosk: vosk-model-small-de-0.15, Piper: de_DE-thorsten-medium)
+Measuring background noise - please stay quiet ... done. Threshold: 150
+
+Ready - speak Deutsch. A pause of 0.8s ends your turn. Stop with Ctrl+C.
+
+  listening ...
+  heard   : hallo roboter wie geht es dir
+  speaking ... (0.21s synthesis)
+```
+
+What happens under the hood, and why:
+
+- **Noise calibration at startup.** The speech threshold is measured from the actual room rather
+  than hard-coded, because a robot's own fans and motors set the noise floor. Measured: a quiet
+  room gives a threshold of ~150, an audible fan ~900, and both endpoint correctly.
+- **Pre-roll buffer.** The 320 ms *before* the threshold was crossed are fed to the recognizer
+  too — otherwise the first syllable, which is what crossed the threshold, gets clipped.
+- **Streaming recognition.** Audio goes into Vosk as it arrives, so when the pause is detected
+  the transcript is essentially already decoded. That is what keeps the response near real time.
+- **The microphone is muted during playback.** Without this the robot transcribes its own voice
+  and answers itself forever. (A headset makes this robust; open speakers rely on the muting.)
+- **Short blips are discarded.** Sounds under `--min-speech-sec` (0.3 s) — a door, a cough — never
+  reach the recognizer.
+
+---
+
+## Commands
+
+```bash
+python -m voice_interaction <command> [options]
+```
+
+| Command | What it does |
+|---|---|
+| `echo` | The example app: listen, wait for the pause, speak it back |
+| `listen` | Speech to text only — prints transcripts, says nothing |
+| `speak "text"` | Text to speech; `--out file.wav` writes instead of playing |
+| `devices` | List audio inputs/outputs with their indices and names |
+| `download --lang de\|en\|all` | Fetch the Vosk model and Piper voice for a language |
+| `selftest` | TTS → STT round trip **without audio hardware** — verifies an install |
+
+`selftest` is the one to run first on a fresh machine: it synthesizes a sentence, feeds the
+samples straight back into the recognizer, and reports timings. No mic, no speaker, no desktop
+session needed, so it also works over SSH on a headless Nano.
+
+Useful options: `--lang de|en`, `--input-device`/`--output-device` (index or name substring),
+`--silence-sec`, `--threshold`.
+
+---
+
+## Configuration
+
+Every setting is an environment variable, so a deployment can be tuned without touching code.
+CLI flags override them.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `VI_LANG` | `de` | Language preset (`de`, `en`) |
+| `VI_MODELS_DIR` | `models` | Where models live |
+| `VI_INPUT_DEVICE` | system default | Mic index or name substring |
+| `VI_OUTPUT_DEVICE` | system default | Speaker index or name substring |
+| `VI_SILENCE_SEC` | `0.8` | Pause that ends an utterance |
+| `VI_SILENCE_THRESHOLD` | measured at startup | RMS speech threshold (0–32767) |
+| `VI_MIN_SPEECH_SEC` | `0.3` | Shorter sounds are discarded as noise |
+| `VI_MAX_UTTERANCE_SEC` | `15.0` | Hard cap so a stuck mic can't record forever |
+| `VI_TTS_THREADS` | `2` | ONNX Runtime threads for Piper |
+
+### Tuning the pause
+
+`VI_SILENCE_SEC` is the single knob that decides how the system feels:
+
+- **0.5–0.6 s** — snappy, but cuts people off mid-sentence when they pause to think.
+- **0.8 s** (default) — a good compromise for command-style interaction.
+- **1.2–1.5 s** — for longer, more thoughtful utterances; noticeably laggier.
+
+If it triggers on background noise, raise the threshold (`--threshold 600`); if quiet speech is
+missed, lower it. Run `listen` to see what is being picked up without any audio response.
+
+---
+
+## Resource budget
+
+Measured on an x86 development machine, both languages' engines in one process:
+
+| | RSS |
+|---|---|
+| Python + numpy + onnxruntime + vosk imports | 103 MB |
+| `+` Vosk small German model | 282 MB |
+| `+` Piper `de_DE-thorsten-medium` | 392 MB |
+| Steady state after synthesizing and recognizing | **462 MB** |
+
+Speed on the same machine: model load 1.7 s once at startup; synthesis RTF 0.06; recognition
+RTF 0.14 (de) / 0.29 (en) — i.e. far faster than real time, with headroom to spare.
+
+**On the Nano expect roughly 4–6× those CPU times** (Cortex-A57 @ 1.43 GHz vs a desktop core) —
+so synthesis around RTF 0.3 and recognition around RTF 0.8–1.2. Recognition runs *while* the
+person is still speaking, so what the user perceives is only the tail plus synthesis. These Nano
+figures are extrapolated, **not yet measured on real P3450 hardware** — verify with
+`selftest` on the device.
+
+To claw back headroom:
+
+- `VI_TTS_THREADS=2` (default) keeps Piper from taking all 4 cores. Raise to 3 only if nothing
+  else runs on the device.
+- Use a `-low` Piper voice instead of `-medium` (`--voice de_DE-thorsten-low`): ~30 MB less RAM
+  and noticeably faster, at some quality cost.
+- Run one language at a time — loading both doubles the model memory.
+- `sudo nvpmodel -m 0 && sudo jetson_clocks` puts the Nano in its 10 W all-core mode. Worth
+  ~30–40 % latency on this workload; make sure the cooling can take it.
+
+---
+
+## Languages and models
+
+| | German | English |
+|---|---|---|
+| Vosk model | `vosk-model-small-de-0.15` (45 MB, WER 13.75) | `vosk-model-small-en-us-0.15` (40 MB, WER 9.85) |
+| Piper voice | `de_DE-thorsten-medium` | `en_US-lessac-medium` |
+
+Presets live in [`voice_interaction/config.py`](voice_interaction/config.py) — adding a language
+means adding one entry there with a Vosk model name and a Piper voice name.
+
+Alternative German voices (`--voice`, or change the preset): `de_DE-thorsten-low` (faster),
+`de_DE-eva_k-x_low` (21 MB, robotic), `de_DE-thorsten-high` (114 MB, slower),
+`de_DE-kerstin-low`, `de_DE-ramona-low`, `de_DE-karlsson-low`, `de_DE-pavoque-low`.
+
+Bigger Vosk models (`vosk-model-de-0.21`, 1.9 GB) are considerably more accurate but do not fit
+a Nano's memory budget alongside everything else.
+
+**Both languages at once is not supported in one process.** Vosk needs a model per language, and
+a running recognizer is bound to one. For a bilingual robot, either switch language on a command
+(reload the recognizer, ~0.5 s) or run one process per language if RAM allows.
+
+---
+
+## Testing
+
+```bash
+pip install pytest
+pytest
+```
+
+Nine tests, none of which need a microphone or speaker:
+
+- `tests/test_vad.py` — pause detection: endpoint timing, threshold adaptation from the noise
+  floor, rejection of short blips, the maximum-utterance cap. No models needed, runs anywhere.
+- `tests/test_echo_pipeline.py` — the whole echo loop against a simulated microphone: synthesized
+  speech goes in, the transcript and a spoken response come out, and the mic is verified to be
+  muted during playback. Skips automatically if the models are not downloaded.
+
+Plus `python -m voice_interaction selftest` as the on-device install check.
+
+---
+
+## Licenses
+
+This matters if the robot ever ships as a product:
+
+| Component | License | Implication |
+|---|---|---|
+| Vosk + its small models | Apache-2.0 | Permissive, no copyleft |
+| Piper (`piper-tts` ≥ 1.3) | **GPL-3.0-or-later** | Copyleft — affects distribution of a combined work |
+| Piper voices | MIT / CC0 / CC-BY (per voice) | Check the voice card; `thorsten` and `lessac` are permissive |
+| sounddevice | MIT | Permissive |
+
+`piper-tts` was MIT up to version 1.2.0 (the original Rhasspy project) and became GPL-3.0 with
+the 1.3 rewrite under new maintainership. Version 1.2.0 is still installable and permissive, but
+unmaintained, and its `piper-phonemize` dependency only has wheels for Python 3.9–3.11. If
+copyleft is a problem for you, that pin is the escape hatch — otherwise stay on the current
+release. For personal, internal or research robots, GPL-3.0 imposes no practical restriction.
+
+---
+
+## Troubleshooting
+
+**`selftest` passes but `echo` hears nothing.** Wrong input device. Run `devices`, then
+`echo --input-device "<name fragment>"`. On Linux check the mic isn't muted in `alsamixer`.
+
+**It answers itself / loops forever.** Speaker audio is reaching the mic. Use a headset, lower
+the volume, or increase the distance. The mic is already muted during playback; what leaks is
+room reverb after playback ends.
+
+**It triggers on fan noise.** Raise `--threshold`. Startup calibration assumes the room is quiet
+during that first second — if the robot was moving then, the measurement is off; restart or set
+the threshold explicitly.
+
+**It cuts me off mid-sentence.** Raise `--silence-sec` to 1.2.
+
+**Recognition is poor.** Get the mic closer before reaching for a bigger model. Vosk's small
+models are trained on clean wideband speech and degrade quickly with distance and reverb. Check
+you are on the right language — German speech through the English model produces confident
+nonsense.
+
+**`OSError: PortAudio library not found` (Linux).** `sudo apt install libportaudio2`.
+
+**`piper-tts` won't install on the Nano.** JetPack 4.6 ships Python 3.6; piper needs ≥ 3.9. See
+the deadsnakes instructions the install script prints.
+
+---
+
+## Where to take it next
+
+`echo.py` is deliberately the thinnest possible app so the substitution point is obvious: in
+`EchoApp._handle_utterance`, the text goes straight to the synthesizer. Replace that one call
+with intent parsing, a state machine, a local LLM, or ROS message publishing, and the rest of
+the stack — capture, endpointing, recognition, playback, muting — stays as it is.
+
+Likely next steps for a robot:
+
+- **Wake word** so it doesn't react to every noise ([openWakeWord](https://github.com/dscripka/openWakeWord)
+  is Apache-2.0 and runs on the same CPU budget).
+- **Barge-in**: let the user interrupt playback instead of muting the mic for its duration.
+- **Language switching** on a spoken command, reloading the recognizer.
+- **A long-running service** with the recognizer kept warm, talking to the rest of the robot over
+  ROS topics, MQTT or a socket, instead of a foreground CLI.

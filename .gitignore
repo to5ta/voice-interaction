@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Downloaded models (~90 MB per language) — fetch with:
+#   python -m voice_interaction download --lang all
+models/
+
+*.wav
