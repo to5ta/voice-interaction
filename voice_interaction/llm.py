@@ -125,10 +125,12 @@ class Responder:
         temperature: float = None,
         system_prompt: str = None,
         history_turns: int = None,
+        gpu_layers: int = None,
     ):
         self.language = cfg.get_language(lang)
         self.model = cfg.get_llm_model(model)
         self.n_threads = n_threads or cfg.LLM_THREADS
+        self.gpu_layers = cfg.LLM_GPU_LAYERS if gpu_layers is None else gpu_layers
         self.max_tokens = max_tokens or cfg.LLM_MAX_TOKENS
         self.n_ctx = n_ctx or cfg.LLM_CONTEXT
         self.temperature = cfg.LLM_TEMPERATURE if temperature is None else temperature
@@ -140,6 +142,7 @@ class Responder:
         turns = cfg.LLM_HISTORY_TURNS if history_turns is None else history_turns
         # Two messages per exchange: the question and the answer.
         self._history = collections.deque(maxlen=max(0, turns) * 2)
+        self.last_token_count = 0
         self._llm = None
 
     def load(self) -> None:
@@ -150,6 +153,7 @@ class Responder:
                 f"Run: python -m voice_interaction download --llm {self.model.name}"
             )
         try:
+            import llama_cpp
             from llama_cpp import Llama
         except ImportError as exc:
             raise SystemExit(
@@ -157,20 +161,33 @@ class Responder:
                 "Run: pip install -r requirements-llm.txt"
             ) from exc
 
+        # Asking for offload from a CPU-only build fails silently otherwise:
+        # it loads, it answers, it is simply as slow as before, and you spend
+        # an evening looking for the wrong thing.
+        if self.gpu_layers and not llama_cpp.llama_supports_gpu_offload():
+            print(
+                f"WARNING: --gpu-layers {self.gpu_layers} was requested, but this "
+                "llama-cpp-python has no GPU support compiled in.\n"
+                "         Running on the CPU. See the README on installing a CUDA build."
+            )
+            self.gpu_layers = 0
+
         self._llm = Llama(
             model_path=str(path),
             n_ctx=self.n_ctx,
             n_threads=self.n_threads,
-            # The GPU stays out of this: on a Nano it belongs to the vision
-            # pipeline, and a 0.5B model would not repay the contention.
-            n_gpu_layers=0,
+            # Zero by default: on a Nano the GPU belongs to the vision
+            # pipeline, and a 0.5B model would not repay the contention. A
+            # desktop card wants -1 (everything) and a bigger model.
+            n_gpu_layers=self.gpu_layers,
             verbose=False,
         )
         _LOGGER.info(
-            "Loaded LLM '%s' (%d threads, ctx %d)",
+            "Loaded LLM '%s' (%d threads, ctx %d, gpu layers %d)",
             self.model.name,
             self.n_threads,
             self.n_ctx,
+            self.gpu_layers,
         )
 
     def reset(self) -> None:
@@ -218,6 +235,9 @@ class Responder:
         the end, so an interrupted answer leaves no half turn in the history."""
         collected: List[str] = []
         yield from sentences(self._tokens(text, collected))
+        # llama.cpp streams one token per chunk, so this is the answer length
+        # in tokens — enough to report tokens/s without a second tokenizer pass.
+        self.last_token_count = len(collected)
         answer = clean_for_speech("".join(collected))
         if answer and self._history.maxlen:
             self._history.append({"role": "user", "content": text})

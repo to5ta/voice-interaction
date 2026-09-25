@@ -248,8 +248,8 @@ samples straight back into the recognizer, and reports timings. No mic, no speak
 session needed, so it also works over SSH on a headless Nano.
 
 Useful options: `--lang de|en`, `--input-device`/`--output-device` (index or name substring),
-`--silence-sec`, `--threshold`; for `chat` and `ask` also `--llm-model`, `--max-tokens` and
-`--system`.
+`--silence-sec`, `--threshold`; for `chat` and `ask` also `--llm-model`, `--max-tokens`,
+`--system`, `--threads` and `--gpu-layers`.
 
 ---
 
@@ -271,6 +271,7 @@ CLI flags override them.
 | `VI_TTS_THREADS` | `2` | ONNX Runtime threads for Piper |
 | `VI_LLM_MODEL` | `qwen2.5-0.5b` | Which chat model (see below) |
 | `VI_LLM_THREADS` | `2` | llama.cpp threads |
+| `VI_LLM_GPU_LAYERS` | `0` | Layers on the GPU; `-1` = all. Needs a CUDA build |
 | `VI_LLM_MAX_TOKENS` | `80` | Hard cap on the answer length |
 | `VI_LLM_CONTEXT` | `1024` | Context window (system prompt + history + turn) |
 | `VI_LLM_HISTORY_TURNS` | `3` | Exchanges the model still sees; `0` = no memory |
@@ -316,7 +317,7 @@ Memory, not CPU, is the binding constraint on a Nano. One language fits comforta
 board; both at once is possible but leaves little for anything else. On a 2 GB board, run
 headless, use one language, and add swap.
 
-The chat row is a +500 MB delta measured against the German-only figure. The 469 MB GGUF is
+The chat row is a +500 MB delta, measured on an i7-1270P against the German-only figure. The 469 MB GGUF is
 memory-mapped, so RSS only climbs to its full size once the whole model has been touched — after
 the first answer or two, not at load. One language plus the chat model still leaves ~3 GB on a
 4 GB Nano; two languages plus chat does not leave enough to be worth it.
@@ -336,19 +337,22 @@ several times more while the decoder allocates):
 Live partial transcripts are free: `PartialResult()` on every block does not measurably change
 the totals.
 
-Answer generation, measured over five short questions with the default 0.5B model:
+Answer generation with the default 0.5B model, over five short questions. Measured on a
+different machine than the rows above — an **i7-1270P**, which is why it gets its own column:
 
-| | i7-4790K @ 4.4 GHz | Nano estimate (÷6–8) |
+| | i7-1270P, 2 threads | Nano estimate (÷6–8) |
 |---|---|---|
-| Generation, 2 threads | 26 tokens/s | ~3–4 tokens/s |
+| Generation | 26 tokens/s | ~3–4 tokens/s |
 | To the **first spoken sentence** | 0.8 s mean, 1.3 s max | ~5–9 s |
 | Whole answer (18–58 tokens) | 1.1 s mean, 1.7 s max | ~7–13 s |
 
-Only the middle row is really felt, because the rest of the answer is generated
-while the first sentence is already being spoken. Throwing cores at it helps less than expected —
-1 → 2 threads nearly doubles throughput (14.9 → 28.4 tokens/s), 2 → 4 adds a quarter (35.3):
-generation is memory-bandwidth bound, not compute bound. On a Nano, whose bandwidth is far
-scarcer than an i7's, taking cores from the rest of the robot is unlikely to repay itself.
+Only the middle row is really felt, because the rest of the answer is generated while the first
+sentence is already being spoken. Throwing cores at it helps less than expected: on one fixed
+question, 1 → 2 threads nearly doubled throughput (14.9 → 28.4 tokens/s) while 2 → 4 added a
+quarter (35.3), and on the 1.5B model more than two threads was repeatedly *slower*. Generation is
+memory-bandwidth bound rather than compute bound, and that laptop's efficiency cores make it
+worse. Measure before tuning — `ask` prints tokens/s — and on a Nano expect taking cores from the
+rest of the robot not to repay itself.
 
 What matters for real-time behaviour is the per-block deadline — each 64 ms of audio must be
 decoded in under 64 ms:
@@ -404,17 +408,71 @@ a Nano's memory budget alongside everything else.
 
 ### The chat model
 
-| | `qwen2.5-0.5b` (default) | `qwen2.5-1.5b` | `smollm2-360m` |
-|---|---|---|---|
-| File (4-bit GGUF) | 469 MB | 1066 MB | 368 MB (8-bit) |
-| License | Apache-2.0 | Apache-2.0 | Apache-2.0 |
-| German | usable | noticeably better | not really |
-| Fits a 4 GB Nano | yes | in theory, but ~3x slower | yes |
+All four are Apache-2.0. Measured on an i7-1270P at `VI_LLM_CONTEXT=1024` with the same four
+questions asked of each; ranges are the spread over 2–8 threads:
+
+| | `smollm2-360m` | `qwen2.5-0.5b` (default) | `qwen2.5-1.5b` | `qwen2.5-7b` |
+|---|---|---|---|---|
+| File | 368 MB (8-bit) | 469 MB | 1066 MB | 4466 MB |
+| RSS while answering | ~0.5 GB | ~0.5 GB | ~1.7 GB | **~7.3 GB** |
+| Generation on that CPU | ~49 tok/s | 28–33 tok/s | 11–18 tok/s | **3 tok/s** |
+| To the first sentence | 0.6 s | 0.6 s | 1.4–2.3 s | **8–9 s** |
+| German | no | usable | better | genuinely good |
+| Runs on a 4 GB Nano | yes | yes | tight, ~3x slower | no |
+
+The quality jump is not subtle, and one question shows it better than any benchmark:
+
+| | "wie viele beine hat eine spinne" |
+|---|---|
+| `qwen2.5-0.5b` | *Eine Spinne hat zwei Beine.* |
+| `qwen2.5-1.5b` | *Eine Spinne hat fünf Beine.* |
+| `qwen2.5-7b` | *Eine Spinne hat normalerweise acht Beine.* |
 
 Pick one with `--llm-model` or `VI_LLM_MODEL`, fetch it with `download --llm <name>`. Adding
 another is one entry in `LLM_MODELS` in [`voice_interaction/config.py`](voice_interaction/config.py):
-a HuggingFace repo and a GGUF filename. Anything larger than ~1B parameters stops making sense on
-a Nano long before it stops fitting in RAM.
+a HuggingFace repo and a GGUF filename. Qwen2.5-3B would be the obvious middle ground and is
+deliberately missing — it is the one size in that family that is not Apache-2.0 (Qwen Research
+License, non-commercial). Reasoning models (Qwen3 and friends) work too, but emit `<think>`
+blocks you would have to strip before they reach the synthesizer.
+
+### Bigger models need a GPU to stay conversational
+
+3 tokens/s and eight seconds to the first sentence is not a conversation, so `qwen2.5-7b` on the CPU
+is for judging quality, not for talking to. Offloading it to a GPU is one flag:
+
+```bash
+python -m voice_interaction chat --llm-model qwen2.5-7b --gpu-layers -1
+```
+
+`-1` means "all layers"; a positive number offloads that many and leaves the rest on the CPU,
+which is how you fit a model that is slightly too big for the card. `VI_LLM_GPU_LAYERS` does the
+same from the environment. The default is 0 — on a Nano the GPU belongs to the vision pipeline,
+and a 0.5B model would not repay the contention.
+
+**This needs a CUDA build of llama-cpp-python**; the CPU wheel from `requirements-llm.txt` has no
+GPU support compiled in. Ask for offload anyway and you get a warning and CPU execution, rather
+than a silent mystery:
+
+```powershell
+pip install llama-cpp-python --force-reinstall --no-cache-dir --only-binary=:all: ^
+  --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu124
+```
+
+(`cu124` and `cu125` carry current builds for Windows and Linux x86_64; `cu121` is stuck on an old
+version. Match the tag to your CUDA runtime, not to your driver.)
+
+A 6 GB card such as a **GTX 1060 6 GB** holds all of `qwen2.5-7b` at 4 bits: 4.4 GB of weights
+plus a tiny KV cache at the default 1024-token context, so nothing has to stay behind on the CPU.
+Pascal is supported by the CUDA 12.x runtimes those wheels are built against. Expect roughly
+20–30 tokens/s from that card's 192 GB/s of memory bandwidth — **estimated, not measured: there
+is no NVIDIA GPU in this project's test machine.** `ask` prints tokens/s, so one command tells
+you what your card actually does:
+
+```bash
+python -m voice_interaction ask --llm-model qwen2.5-7b --gpu-layers -1 "erzaehl mir etwas ueber roboter"
+```
+
+
 
 **Both languages at once is not supported in one process.** Vosk needs a model per language, and
 a running recognizer is bound to one. For a bilingual robot, either switch language on a command
@@ -516,8 +574,16 @@ a compiler and does not even unpack on Windows (llama.cpp's vendored tree exceed
 path limit).
 
 **The answers are confidently wrong.** That is a 0.5B model, not a mistake in the wiring. It is
-fluent, not knowledgeable. Use `qwen2.5-1.5b` on a desktop, or handle the questions that must be
-answered correctly by parsing the transcript yourself before it reaches the model.
+fluent, not knowledgeable. On a desktop use `--llm-model qwen2.5-7b` (with `--gpu-layers -1` if
+you have a card for it), or handle the questions that must be answered correctly by parsing the
+transcript yourself before it reaches the model.
+
+**`--gpu-layers` printed a warning and ran on the CPU anyway.** The installed llama-cpp-python has
+no GPU support compiled in — the default wheel is CPU-only by design. Install a CUDA build, see
+"Bigger models need a GPU" above.
+
+**A bigger model gets killed, or swaps the machine to death.** `qwen2.5-7b` needs ~7.3 GB resident
+on the CPU. Offload it to a GPU, drop to `qwen2.5-1.5b`, or lower `VI_LLM_CONTEXT`.
 
 **The robot takes forever to answer on the Nano.** Lower `VI_LLM_MAX_TOKENS`, keep
 `VI_LLM_HISTORY_TURNS` small (every remembered turn is re-processed on the next question), and

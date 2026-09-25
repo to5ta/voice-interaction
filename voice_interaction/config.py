@@ -46,9 +46,11 @@ class LlmModel:
     note: str
 
 
-# Deliberately tiny models: the whole point of `chat` is that it still fits
-# next to Vosk and Piper on a 4 GB Nano. Everything here is Apache-2.0 and
-# runs on the CPU in a few hundred MB.
+# The default is deliberately tiny: the whole point of `chat` is that it still
+# fits next to Vosk and Piper on a 4 GB Nano. The larger entries are for the
+# machine on your desk — a strong CPU, or a GPU to offload to. Everything here
+# is Apache-2.0; Qwen2.5-3B is absent because it is the one size in that family
+# that is not (it ships under the Qwen Research License).
 LLM_MODELS = {
     "qwen2.5-0.5b": LlmModel(
         name="qwen2.5-0.5b",
@@ -63,6 +65,13 @@ LLM_MODELS = {
         filename="qwen2.5-1.5b-instruct-q4_k_m.gguf",
         size_mb=1066,
         note="noticeably better answers, ~3x slower - desktops, not a Nano",
+    ),
+    "qwen2.5-7b": LlmModel(
+        name="qwen2.5-7b",
+        repo="bartowski/Qwen2.5-7B-Instruct-GGUF",
+        filename="Qwen2.5-7B-Instruct-Q4_K_M.gguf",
+        size_mb=4466,
+        note="a real assistant - strong CPU, or fully offloaded to a 6 GB GPU",
     ),
     "smollm2-360m": LlmModel(
         name="smollm2-360m",
@@ -100,6 +109,11 @@ TTS_THREADS = int(os.environ.get("VI_TTS_THREADS", "2"))
 LLM_THREADS = int(os.environ.get("VI_LLM_THREADS", "2"))
 
 # --- Local LLM (`chat`) ---------------------------------------------------
+# Layers to hand to a GPU. 0 keeps everything on the CPU, which is the point
+# on a Nano — its GPU belongs to the vision pipeline. -1 offloads the whole
+# model, which is what a desktop card wants. Needs a CUDA (or Metal) build of
+# llama-cpp-python; the CPU wheel ignores this and stays on the CPU.
+LLM_GPU_LAYERS = int(os.environ.get("VI_LLM_GPU_LAYERS", "0"))
 # Short answers are not a style choice: every token is both CPU time and
 # time the user spends waiting for the robot to start talking.
 LLM_MAX_TOKENS = int(os.environ.get("VI_LLM_MAX_TOKENS", "80"))

@@ -9,6 +9,13 @@
 #
 #   pip install -r requirements-llm.txt
 #
+# These wheels are CPU-only. To offload a bigger model to an NVIDIA card
+# (--gpu-layers), replace them with a CUDA build afterwards:
+#
+#   pip install llama-cpp-python --force-reinstall --no-cache-dir \
+#     --only-binary=:all: \
+#     --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu124
+#
 --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
 --only-binary llama-cpp-python
 

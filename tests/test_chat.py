@@ -101,6 +101,20 @@ def test_history_is_bounded():
     assert len(responder.prompts[-1]) == 1 + 2 * 2 + 1
 
 
+# --- Model and device selection -------------------------------------------
+
+def test_the_model_stays_on_the_cpu_by_default():
+    """A Nano's GPU belongs to the vision pipeline, so offload is opt-in."""
+    assert Responder().gpu_layers == 0
+
+
+def test_model_and_gpu_choice_reach_the_responder():
+    app = ChatApp(lang="de", llm_model="qwen2.5-7b", gpu_layers=-1, n_threads=8)
+    assert app.responder.model.name == "qwen2.5-7b"
+    assert app.responder.gpu_layers == -1
+    assert app.responder.n_threads == 8
+
+
 # --- The loop -------------------------------------------------------------
 
 class FakeResponder:
@@ -111,6 +125,7 @@ class FakeResponder:
     def __init__(self, **kwargs):
         self.model = types.SimpleNamespace(name="fake")
         self.n_threads = 1
+        self.gpu_layers = 0
         self.max_tokens = 32
         self.asked = []
 

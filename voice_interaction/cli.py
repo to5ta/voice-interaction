@@ -160,6 +160,8 @@ def cmd_chat(args) -> int:
         llm_model=args.llm_model,
         max_tokens=args.max_tokens,
         system_prompt=args.system,
+        n_threads=args.threads,
+        gpu_layers=args.gpu_layers,
     )
 
 
@@ -172,6 +174,8 @@ def cmd_ask(args) -> int:
         llm_model=args.llm_model,
         max_tokens=args.max_tokens,
         system_prompt=args.system,
+        n_threads=args.threads,
+        gpu_layers=args.gpu_layers,
         speak=args.speak,
         output_device=args.output_device,
     )
@@ -290,6 +294,11 @@ def build_parser() -> argparse.ArgumentParser:
                        help=f"cap on the answer length (default: {cfg.LLM_MAX_TOKENS})")
         p.add_argument("--system", default=None,
                        help="replace the built-in system prompt, e.g. to give the robot a job")
+        p.add_argument("--threads", type=int, default=None,
+                       help=f"llama.cpp threads (default: {cfg.LLM_THREADS})")
+        p.add_argument("--gpu-layers", type=int, default=None, metavar="N",
+                       help="layers to offload to a GPU; -1 is all of them "
+                            f"(default: {cfg.LLM_GPU_LAYERS}, CPU only). Needs a CUDA build.")
 
     p = sub.add_parser("devices", help="list audio input/output devices")
     p.set_defaults(func=cmd_devices)

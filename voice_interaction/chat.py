@@ -20,6 +20,15 @@ from .echo import EchoApp
 from .llm import Responder
 
 
+def _where(responder) -> str:
+    """Where the model actually ended up — the one thing you want in the log
+    when the same command is fast on one machine and slow on another."""
+    if responder.gpu_layers:
+        layers = "all layers" if responder.gpu_layers < 0 else f"{responder.gpu_layers} layers"
+        return f"{layers} on the GPU"
+    return f"{responder.n_threads} threads, CPU"
+
+
 class ChatApp(EchoApp):
     def __init__(
         self,
@@ -27,6 +36,8 @@ class ChatApp(EchoApp):
         max_tokens: int = None,
         system_prompt: str = None,
         history_turns: int = None,
+        n_threads: int = None,
+        gpu_layers: int = None,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -36,6 +47,8 @@ class ChatApp(EchoApp):
             max_tokens=max_tokens,
             system_prompt=system_prompt,
             history_turns=history_turns,
+            n_threads=n_threads,
+            gpu_layers=gpu_layers,
         )
 
     def _load(self) -> None:
@@ -44,7 +57,7 @@ class ChatApp(EchoApp):
         started = time.monotonic()
         self.responder.load()
         print(f"LLM loaded in {time.monotonic() - started:.1f}s "
-              f"({self.responder.model.name}, {self.responder.n_threads} threads, "
+              f"({self.responder.model.name}, {_where(self.responder)}, "
               f"max {self.responder.max_tokens} tokens)")
 
     def _reply_parts(self, text: str):
@@ -94,18 +107,21 @@ def main(**kwargs) -> int:
 
 
 def ask(text: str, lang: str = None, llm_model: str = None, max_tokens: int = None,
-        system_prompt: str = None, speak: bool = False, output_device=None) -> int:
+        system_prompt: str = None, n_threads: int = None, gpu_layers: int = None,
+        speak: bool = False, output_device=None) -> int:
     """One question, one answer — no microphone involved.
 
-    The way to check the chat mode over SSH on a headless robot, and the
-    fastest way to see what a given model actually does with a prompt."""
+    The way to check the chat mode over SSH on a headless robot, the fastest
+    way to see what a given model does with a prompt, and — because it prints
+    tokens per second — the way to compare models and machines."""
     responder = Responder(lang=lang, model=llm_model, max_tokens=max_tokens,
-                          system_prompt=system_prompt)
+                          system_prompt=system_prompt, n_threads=n_threads,
+                          gpu_layers=gpu_layers)
     models.require_llm(responder.model.name)
     started = time.monotonic()
     responder.load()
     print(f"LLM loaded in {time.monotonic() - started:.1f}s ({responder.model.name}, "
-          f"{responder.n_threads} threads)")
+          f"{_where(responder)})")
 
     synthesizer = None
     if speak:
@@ -129,7 +145,9 @@ def ask(text: str, lang: str = None, llm_model: str = None, max_tokens: int = No
     if first_sec is None:
         print("(the model said nothing)")
         return 1
-    print(f"\n{first_sec:.1f}s to the first sentence, {total:.1f}s in total.")
+    tokens = responder.last_token_count
+    print(f"\n{first_sec:.1f}s to the first sentence, {total:.1f}s in total "
+          f"({tokens} tokens, {tokens / total:.1f} tok/s).")
     return 0
 
 
