@@ -1,8 +1,9 @@
-"""Model download and discovery for both engines.
+"""Model download and discovery for all three engines.
 
-Piper voices are two loose files (.onnx + .onnx.json) from HuggingFace;
-Vosk models are zip archives from alphacephei.com. Both are fetched with
-urllib so the install has no extra dependency just to download things."""
+Piper voices are two loose files (.onnx + .onnx.json) from HuggingFace, Vosk
+models are zip archives from alphacephei.com, and the chat mode's LLM is a
+single GGUF file, again from HuggingFace. All are fetched with urllib so the
+install has no extra dependency just to download things."""
 
 import shutil
 import sys
@@ -14,6 +15,7 @@ from . import config as cfg
 
 PIPER_BASE_URL = "https://huggingface.co/rhasspy/piper-voices/resolve/main"
 VOSK_BASE_URL = "https://alphacephei.com/vosk/models"
+HF_BASE_URL = "https://huggingface.co"
 
 
 def _report(block_num, block_size, total_size):
@@ -81,6 +83,43 @@ def download_vosk_model(model: str, force: bool = False) -> Path:
     if not target.exists():
         raise RuntimeError(f"archive did not contain expected directory {target}")
     return target
+
+
+def download_llm(name: str = None, force: bool = False) -> Path:
+    """Fetch one GGUF model for the chat mode."""
+    model = cfg.get_llm_model(name)
+    cfg.LLM_DIR.mkdir(parents=True, exist_ok=True)
+    target = cfg.llm_path(model)
+
+    if target.exists() and not force:
+        print(f"  have {target.name}")
+        return target
+
+    url = f"{HF_BASE_URL}/{model.repo}/resolve/main/{model.filename}"
+    print(f"{model.name} ({model.size_mb} MB):")
+    print(f"  downloading {model.filename}")
+    # Download beside the target and rename, so an interrupted transfer never
+    # leaves a truncated GGUF that llama.cpp would later fail to parse.
+    partial = target.with_suffix(target.suffix + ".part")
+    urllib.request.urlretrieve(url, partial, reporthook=_report)
+    partial.replace(target)
+    return target
+
+
+def missing_llm(name: str = None) -> list:
+    model = cfg.get_llm_model(name)
+    if cfg.llm_path(model).exists():
+        return []
+    return [f"LLM '{model.name}'"]
+
+
+def require_llm(name: str = None) -> None:
+    model = cfg.get_llm_model(name)
+    if missing_llm(model.name):
+        raise SystemExit(
+            f"Missing model for chat: {model.filename} ({model.size_mb} MB).\n"
+            f"Run: python -m voice_interaction download --llm {model.name}"
+        )
 
 
 def ensure_language(code: str, force: bool = False) -> None:

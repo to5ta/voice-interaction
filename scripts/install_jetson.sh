@@ -2,11 +2,21 @@
 # Setup for Jetson Nano P3450 (NVIDIA JetPack / Ubuntu) and ordinary Linux boxes.
 # Everything runs on the CPU: the GPU stays free for vision or other CUDA work.
 #
-# Usage: ./scripts/install_jetson.sh [lang]     lang = de | en | all (default: all)
+# Usage: ./scripts/install_jetson.sh [lang] [--llm]
+#   lang  = de | en | all (default: all)
+#   --llm = also install llama-cpp-python and the chat model (~470 MB)
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
-LANG_ARG="${1:-all}"
+LANG_ARG="all"
+WITH_LLM=0
+for arg in "$@"; do
+  case "$arg" in
+    --llm) WITH_LLM=1 ;;
+    de|en|all) LANG_ARG="$arg" ;;
+    *) echo "Usage: $0 [de|en|all] [--llm]" >&2; exit 2 ;;
+  esac
+done
 
 echo "== voice-interaction setup =="
 
@@ -43,8 +53,19 @@ source .venv/bin/activate
 pip install --upgrade pip
 pip install -r requirements.txt
 
+# --- Local LLM (optional) -------------------------------------------------
+# --only-binary in requirements-llm.txt is deliberate: building llama.cpp from
+# source on a Nano takes the better part of an hour, and a prebuilt aarch64
+# wheel exists. If pip cannot find one, that is the message you want to see.
+if [ "$WITH_LLM" = "1" ]; then
+  pip install -r requirements-llm.txt
+fi
+
 # --- Models ---------------------------------------------------------------
 python -m voice_interaction download --lang "$LANG_ARG"
+if [ "$WITH_LLM" = "1" ]; then
+  python -m voice_interaction download --llm
+fi
 
 cat <<'EOF'
 
@@ -54,6 +75,7 @@ Setup complete.
   python -m voice_interaction selftest          # verify without a microphone
   python -m voice_interaction devices           # find your mic/speaker
   python -m voice_interaction echo              # the example application
+  python -m voice_interaction chat              # ... with a local LLM (--llm installs)
 
 On a Nano, run it at full clocks for the lowest latency:
   sudo nvpmodel -m 0 && sudo jetson_clocks

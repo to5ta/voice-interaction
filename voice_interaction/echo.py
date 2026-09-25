@@ -58,18 +58,26 @@ class EchoApp:
         threshold = self.endpointer.calibrate(chunks)
         print(f" done. Threshold: {threshold:.0f}")
 
+    def _reply_parts(self, text: str):
+        """What to say back, in pieces that are synthesized and played one
+        after the other. This is the substitution point: echo says the text
+        itself, ChatApp streams an LLM's answer sentence by sentence so
+        playback can start before the answer is finished."""
+        yield text
+
     def _handle_utterance(self, mic, text: str) -> None:
         print(f"  heard   : {text}")
-        started = time.monotonic()
-        wav_bytes = self.synthesizer.synthesize(text)
-        synth_sec = time.monotonic() - started
 
-        # The robot must not hear itself: muting around playback is what stops
-        # the echo app from echoing its own echo forever.
+        # The robot must not hear itself: muting around the whole reply is
+        # what stops the echo app from echoing its own echo forever.
         mic.mute()
         try:
-            print(f"  speaking ... ({synth_sec:.2f}s synthesis)")
-            audio.play_wav(wav_bytes, device=self.output_device)
+            for part in self._reply_parts(text):
+                started = time.monotonic()
+                wav_bytes = self.synthesizer.synthesize(part)
+                synth_sec = time.monotonic() - started
+                print(f"  speaking ... ({synth_sec:.2f}s synthesis)")
+                audio.play_wav(wav_bytes, device=self.output_device)
         finally:
             mic.unmute()
             self.recognizer.reset()

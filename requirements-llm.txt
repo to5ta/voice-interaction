@@ -1,0 +1,16 @@
+# Optional: the local LLM behind `chat`. Kept out of requirements.txt so the
+# plain speech stack installs (and its tests run) without it.
+#
+# PyPI only carries the source tarball, which needs cmake and a compiler — and
+# on Windows it fails to even unpack, because llama.cpp's vendored tree busts
+# the 260-character path limit. The line below points pip at the project's own
+# index of prebuilt CPU wheels, which covers Windows, Linux x86_64 and Linux
+# aarch64 (glibc >= 2.17, so a JetPack 4.6 Nano is fine).
+#
+#   pip install -r requirements-llm.txt
+#
+--extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
+--only-binary llama-cpp-python
+
+# GPL-3.0 is not in play here: llama-cpp-python and llama.cpp are both MIT.
+llama-cpp-python>=0.3.0

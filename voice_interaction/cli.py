@@ -23,6 +23,10 @@ def cmd_download(args) -> int:
     if args.voice:
         models.download_piper_voice(args.voice, force=args.force)
         return 0
+    if args.llm:
+        models.download_llm(args.llm, force=args.force)
+        print(f"\nModels in {cfg.MODELS_DIR}")
+        return 0
     for code in codes:
         models.ensure_language(code, force=args.force)
     print(f"\nModels in {cfg.MODELS_DIR}")
@@ -143,6 +147,36 @@ def cmd_echo(args) -> int:
     )
 
 
+def cmd_chat(args) -> int:
+    from .chat import main as chat_main
+
+    return chat_main(
+        lang=args.lang,
+        input_device=args.input_device,
+        output_device=args.output_device,
+        threshold=args.threshold,
+        silence_sec=args.silence_sec,
+        show_partial=not args.no_partial,
+        llm_model=args.llm_model,
+        max_tokens=args.max_tokens,
+        system_prompt=args.system,
+    )
+
+
+def cmd_ask(args) -> int:
+    from .chat import ask
+
+    return ask(
+        args.text,
+        lang=args.lang,
+        llm_model=args.llm_model,
+        max_tokens=args.max_tokens,
+        system_prompt=args.system,
+        speak=args.speak,
+        output_device=args.output_device,
+    )
+
+
 def cmd_selftest(args) -> int:
     """Round trip without any audio hardware: synthesize a sentence, feed the
     samples straight into the recognizer, compare. Verifies an install on a
@@ -198,6 +232,33 @@ def cmd_selftest(args) -> int:
     if not text:
         print("\nFAILED: nothing recognized.")
         return 1
+
+    if args.llm:
+        from .llm import Responder
+
+        responder = Responder(lang=lang.code, model=args.llm_model)
+        models.require_llm(responder.model.name)
+        started = time.monotonic()
+        responder.load()
+        print(f"\nllm       : {responder.model.name}, loaded in {time.monotonic() - started:.2f}s")
+
+        started = time.monotonic()
+        first_sec = None
+        answer = []
+        for sentence in responder.stream(text):
+            if first_sec is None:
+                first_sec = time.monotonic() - started
+            answer.append(sentence)
+        if not answer:
+            print("\nFAILED: the model produced no answer.")
+            return 1
+        print(f"answer    : {' '.join(answer)!r}")
+        print(f"generation: {first_sec:.2f}s to the first sentence, "
+              f"{time.monotonic() - started:.2f}s in total")
+        print("\nOK - speech in, model, speech out.")
+        print("Note: this is synthetic speech; accuracy with a real microphone will differ.")
+        return 0
+
     print("\nOK - synthesis and recognition work together.")
     print("Note: this is synthetic speech; accuracy with a real microphone will differ.")
     return 0
@@ -222,6 +283,14 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--silence-sec", type=float, default=None,
                        help=f"pause that ends an utterance (default: {cfg.SILENCE_SEC})")
 
+    def add_llm_opts(p):
+        p.add_argument("--llm-model", default=None, choices=sorted(cfg.LLM_MODELS),
+                       help=f"local LLM to answer with (default: {cfg.DEFAULT_LLM})")
+        p.add_argument("--max-tokens", type=int, default=None,
+                       help=f"cap on the answer length (default: {cfg.LLM_MAX_TOKENS})")
+        p.add_argument("--system", default=None,
+                       help="replace the built-in system prompt, e.g. to give the robot a job")
+
     p = sub.add_parser("devices", help="list audio input/output devices")
     p.set_defaults(func=cmd_devices)
 
@@ -229,6 +298,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--lang", default=cfg.DEFAULT_LANG,
                    choices=sorted(cfg.LANGUAGES) + ["all"], help="(default: %(default)s)")
     p.add_argument("--voice", default=None, help="download only this Piper voice, e.g. de_DE-thorsten-low")
+    p.add_argument("--llm", nargs="?", const=cfg.DEFAULT_LLM, default=None,
+                   choices=sorted(cfg.LLM_MODELS),
+                   help=f"download only the chat model (default: {cfg.DEFAULT_LLM})")
     p.add_argument("--force", action="store_true", help="re-download even if present")
     p.set_defaults(func=cmd_download)
 
@@ -238,6 +310,22 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--output-device", default=None, help="speaker index or name substring")
     p.add_argument("--no-partial", action="store_true", help="do not print live partial transcripts")
     p.set_defaults(func=cmd_echo)
+
+    p = sub.add_parser("chat", help="example app: speak, get an answer from a local LLM")
+    add_lang(p)
+    add_listen_opts(p)
+    add_llm_opts(p)
+    p.add_argument("--output-device", default=None, help="speaker index or name substring")
+    p.add_argument("--no-partial", action="store_true", help="do not print live partial transcripts")
+    p.set_defaults(func=cmd_chat)
+
+    p = sub.add_parser("ask", help="one question to the local LLM, no microphone")
+    p.add_argument("text")
+    add_lang(p)
+    add_llm_opts(p)
+    p.add_argument("--speak", action="store_true", help="also say the answer out loud")
+    p.add_argument("--output-device", default=None, help="speaker index or name substring")
+    p.set_defaults(func=cmd_ask)
 
     p = sub.add_parser("listen", help="speech to text only")
     add_lang(p)
@@ -259,6 +347,10 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("selftest", help="TTS -> STT round trip, no audio hardware needed")
     add_lang(p)
     p.add_argument("--text", default=None, help="phrase to test with")
+    p.add_argument("--llm", action="store_true",
+                   help="also send the transcript through the chat model")
+    p.add_argument("--llm-model", default=None, choices=sorted(cfg.LLM_MODELS),
+                   help=f"which one (default: {cfg.DEFAULT_LLM})")
     p.set_defaults(func=cmd_selftest)
 
     return parser
