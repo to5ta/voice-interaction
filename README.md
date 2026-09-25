@@ -181,30 +181,50 @@ Calibrating ... threshold: 150
 
 ## Resource budget
 
-Measured on an x86 development machine, both languages' engines in one process:
+### Memory
+
+Measured RSS on an x86 development machine:
 
 | | RSS |
 |---|---|
 | Python + numpy + onnxruntime + vosk imports | 103 MB |
-| `+` Vosk small German model | 282 MB |
-| `+` Piper `de_DE-thorsten-medium` | 392 MB |
-| Steady state after synthesizing and recognizing | **462 MB** |
+| `+` German Vosk model and Piper voice, steady state | **404 MB** |
+| `+` English models loaded alongside | **618 MB** |
 
-Speed on the same machine: model load 1.7 s once at startup; synthesis RTF 0.06; recognition
-RTF 0.14 (de) / 0.29 (en) — i.e. far faster than real time, with headroom to spare.
+Memory, not CPU, is the binding constraint on a Nano. One language fits comfortably on a 4 GB
+board; both at once is possible but leaves little for anything else. On a 2 GB board, run
+headless, use one language, and add swap.
 
-Per-block timing matters more than the averages, because recognition has to keep up with the
-microphone in real time. Each 64 ms block of audio must be decoded in under 64 ms; measured on
-the same desktop, `accept()` takes **6.8 ms on average but 36 ms at p95** (the spikes are Kaldi's
-lattice work). Calling `PartialResult()` every block — which is what draws the live transcript —
-adds only ~0.5 ms, so live partials are effectively free.
+### CPU
 
-**On the Nano expect roughly 4–6× those CPU times** (Cortex-A57 @ 1.43 GHz vs a desktop core).
-That puts the average around 55 % of the real-time budget, with p95 spikes exceeding one block —
-absorbed by the input queue during pauses, but it means recognition on a Nano runs with far less
-margin than these desktop averages suggest, and English (RTF 0.29 here vs 0.14 for German) is the
-tighter of the two. These Nano figures are extrapolated, **not yet measured on real P3450
-hardware** — run `selftest` on the device for the real numbers.
+Steady-state CPU time per second of audio (warmed up — the first utterance after startup costs
+several times more while the decoder allocates):
+
+| Stage | i7-4790K @ 4.4 GHz | Nano estimate (÷6–8) |
+|---|---|---|
+| Idle, nobody speaking (VAD only) | 0.02 % of a core | ~0.15 % — free |
+| Recognizing German | 2.8 % of a core | ~20 % of a core |
+| Recognizing English | 5.3 % of a core | ~37 % of a core |
+| Synthesizing (2 threads) | 12.2 % of a core | ~85 %, in bursts |
+
+Live partial transcripts are free: `PartialResult()` on every block does not measurably change
+the totals.
+
+What matters for real-time behaviour is the per-block deadline — each 64 ms of audio must be
+decoded in under 64 ms:
+
+| | mean | p95 | max |
+|---|---|---|---|
+| German, per 64 ms block | 1.7 ms | 7.1 ms | 9.5 ms |
+| English, per 64 ms block | 2.9 ms | 15.3 ms | 29.6 ms |
+
+Scaled 6–8× for the Nano, German stays well inside the deadline while **English p95 blocks land
+at or past it**. Occasional overruns are absorbed by the input queue and caught up during pauses,
+so the effect is a little added latency rather than lost audio — but English has materially less
+margin than German, because the small English model is roughly twice the decoding work.
+
+These Nano figures are extrapolated from an i7-4790K and are **not measured on real P3450
+hardware**. Run `selftest` on the device for the real numbers.
 
 To claw back headroom:
 
@@ -213,8 +233,11 @@ To claw back headroom:
 - Use a `-low` Piper voice instead of `-medium` (`--voice de_DE-thorsten-low`): ~30 MB less RAM
   and noticeably faster, at some quality cost.
 - Run one language at a time — loading both doubles the model memory.
-- `sudo nvpmodel -m 0 && sudo jetson_clocks` puts the Nano in its 10 W all-core mode. Worth
-  ~30–40 % latency on this workload; make sure the cooling can take it.
+- **Use the 10 W power mode.** `sudo nvpmodel -m 0 && sudo jetson_clocks` gives all 4 cores at
+  1.43 GHz. The 5 W mode (`-m 1`) runs only 2 cores at 918 MHz — roughly half the throughput per
+  core and half the cores, which is where English recognition stops keeping up. Check the cooling
+  can sustain 10 W.
+- The **GPU is entirely unused** by this stack, so a vision pipeline can have it in full.
 
 ---
 
