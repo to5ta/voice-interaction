@@ -127,6 +127,7 @@ python -m voice_interaction <command> [options]
 | `listen` | Speech to text only — prints transcripts, says nothing |
 | `speak "text"` | Text to speech; `--out file.wav` writes instead of playing |
 | `devices` | List audio inputs/outputs with their indices and names |
+| `meter` | Live input level meter with the endpointer's verdict — for setting `--threshold` |
 | `download --lang de\|en\|all` | Fetch the Vosk model and Piper voice for a language |
 | `selftest` | TTS → STT round trip **without audio hardware** — verifies an install |
 
@@ -165,7 +166,16 @@ CLI flags override them.
 - **1.2–1.5 s** — for longer, more thoughtful utterances; noticeably laggier.
 
 If it triggers on background noise, raise the threshold (`--threshold 600`); if quiet speech is
-missed, lower it. Run `listen` to see what is being picked up without any audio response.
+missed, lower it. `meter` shows the live level against the threshold and prints when it would
+endpoint — the fastest way to set this on a robot whose fans you cannot silence:
+
+```
+$ python -m voice_interaction meter
+Calibrating ... threshold: 150
+  [########            |                             ]    412
+  [####################|####                         ]   1180  speech starts
+  [                    |                             ]      3  ENDPOINT -> would transcribe now
+```
 
 ---
 
@@ -183,11 +193,18 @@ Measured on an x86 development machine, both languages' engines in one process:
 Speed on the same machine: model load 1.7 s once at startup; synthesis RTF 0.06; recognition
 RTF 0.14 (de) / 0.29 (en) — i.e. far faster than real time, with headroom to spare.
 
-**On the Nano expect roughly 4–6× those CPU times** (Cortex-A57 @ 1.43 GHz vs a desktop core) —
-so synthesis around RTF 0.3 and recognition around RTF 0.8–1.2. Recognition runs *while* the
-person is still speaking, so what the user perceives is only the tail plus synthesis. These Nano
-figures are extrapolated, **not yet measured on real P3450 hardware** — verify with
-`selftest` on the device.
+Per-block timing matters more than the averages, because recognition has to keep up with the
+microphone in real time. Each 64 ms block of audio must be decoded in under 64 ms; measured on
+the same desktop, `accept()` takes **6.8 ms on average but 36 ms at p95** (the spikes are Kaldi's
+lattice work). Calling `PartialResult()` every block — which is what draws the live transcript —
+adds only ~0.5 ms, so live partials are effectively free.
+
+**On the Nano expect roughly 4–6× those CPU times** (Cortex-A57 @ 1.43 GHz vs a desktop core).
+That puts the average around 55 % of the real-time budget, with p95 spikes exceeding one block —
+absorbed by the input queue during pauses, but it means recognition on a Nano runs with far less
+margin than these desktop averages suggest, and English (RTF 0.29 here vs 0.14 for German) is the
+tighter of the two. These Nano figures are extrapolated, **not yet measured on real P3450
+hardware** — run `selftest` on the device for the real numbers.
 
 To claw back headroom:
 
@@ -271,9 +288,14 @@ release. For personal, internal or research robots, GPL-3.0 imposes no practical
 the volume, or increase the distance. The mic is already muted during playback; what leaks is
 room reverb after playback ends.
 
-**It triggers on fan noise.** Raise `--threshold`. Startup calibration assumes the room is quiet
-during that first second — if the robot was moving then, the measurement is off; restart or set
-the threshold explicitly.
+**It triggers on fan noise.** Raise `--threshold`; use `meter` to pick the value. Startup
+calibration assumes the room is quiet during that first second — if the robot was moving then,
+the measurement is off; restart or set the threshold explicitly.
+
+**It printed a partial transcript and then seemed to stop.** That is the app waiting out the
+pause — the partial line is rewritten in place, so it looks frozen. Give it
+`--silence-sec` plus the synthesis time (well under a second for a short sentence) before
+concluding anything is wrong. `meter` shows exactly when the endpoint fires.
 
 **It cuts me off mid-sentence.** Raise `--silence-sec` to 1.2.
 

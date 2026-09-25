@@ -89,6 +89,47 @@ def cmd_listen(args) -> int:
     return 0
 
 
+def cmd_meter(args) -> int:
+    """Live level meter with the endpointer's decision, for setting the
+    threshold on a machine whose noise floor you cannot guess (a robot with
+    fans, an open-plan room) and for answering 'why did it not react?'."""
+    from .vad import Endpointer, Event
+    from .echo import CALIBRATION_BLOCKS
+
+    endpointer = Endpointer(threshold=args.threshold, silence_sec=args.silence_sec)
+
+    with audio.Microphone(device=args.input_device) as mic:
+        if endpointer.threshold is None:
+            print("Calibrating ...", end="", flush=True)
+            mic.drain()
+            endpointer.calibrate([mic.read() for _ in range(CALIBRATION_BLOCKS)])
+            print(f" threshold: {endpointer.threshold:.0f}")
+        else:
+            print(f"Threshold: {endpointer.threshold:.0f} (fixed)")
+        print("Speak — the bar shows the level, '|' marks the threshold. Ctrl+C to stop.\n")
+
+        width = 50
+        scale = endpointer.threshold * 2.5
+        try:
+            for chunk in mic.chunks():
+                event = endpointer.update(chunk)
+                level = endpointer.last_level
+                filled = min(width, int(width * level / scale))
+                mark = min(width - 1, int(width * endpointer.threshold / scale))
+                bar = "".join("|" if i == mark else ("#" if i < filled else " ")
+                              for i in range(width))
+                note = {
+                    Event.SPEECH_START: "speech starts",
+                    Event.ENDPOINT: "ENDPOINT -> would transcribe now",
+                    Event.TOO_SHORT: "discarded (too short)",
+                }.get(event, "")
+                end = "\n" if note else "\r"
+                print(f"  [{bar}] {level:6.0f}  {note}", end=end, flush=True)
+        except KeyboardInterrupt:
+            print("\nStopped.")
+    return 0
+
+
 def cmd_echo(args) -> int:
     from .echo import main as echo_main
 
@@ -202,6 +243,10 @@ def build_parser() -> argparse.ArgumentParser:
     add_lang(p)
     add_listen_opts(p)
     p.set_defaults(func=cmd_listen)
+
+    p = sub.add_parser("meter", help="live input level meter, for setting --threshold")
+    add_listen_opts(p)
+    p.set_defaults(func=cmd_meter)
 
     p = sub.add_parser("speak", help="text to speech")
     p.add_argument("text")
