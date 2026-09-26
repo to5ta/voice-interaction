@@ -23,6 +23,37 @@ from . import config as cfg
 
 _LOGGER = logging.getLogger(__name__)
 
+# The CUDA wheels link against libcudart/libcublas but do not depend on the
+# pip packages that ship them, so importing llama_cpp fails unless the caller
+# exported LD_LIBRARY_PATH. Loading them by absolute path first resolves that
+# for the rest of the process. Dependants before dependencies: libcublas needs
+# libcublasLt, which the loader would not otherwise find.
+_CUDA_LIBS = (
+    ("cublas", ("libcublasLt.so.12", "libcublas.so.12")),
+    ("cuda_runtime", ("libcudart.so.12",)),
+)
+
+
+def _preload_cuda_runtime() -> None:
+    import ctypes
+    import site
+    from pathlib import Path
+
+    roots = [*site.getsitepackages(), site.getusersitepackages()]
+    for package, libraries in _CUDA_LIBS:
+        for root in roots:
+            lib_dir = Path(root) / "nvidia" / package / "lib"
+            if not lib_dir.is_dir():
+                continue
+            for library in libraries:
+                path = lib_dir / library
+                if path.exists():
+                    try:
+                        ctypes.CDLL(str(path), mode=ctypes.RTLD_GLOBAL)
+                    except OSError as exc:  # a CPU-only install needs none of this
+                        _LOGGER.debug("could not preload %s: %s", path, exc)
+            break
+
 # Spoken, not written: no lists, no markdown, no emoji, and short — every
 # token is CPU time on the robot and waiting time for the person in front of
 # it. Small models follow short, concrete rules far better than long ones.
@@ -152,6 +183,7 @@ class Responder:
                 f"LLM not found: {path}\n"
                 f"Run: python -m voice_interaction download --llm {self.model.name}"
             )
+        _preload_cuda_runtime()
         try:
             import llama_cpp
             from llama_cpp import Llama

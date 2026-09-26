@@ -451,22 +451,38 @@ and a 0.5B model would not repay the contention.
 
 **This needs a CUDA build of llama-cpp-python**; the CPU wheel from `requirements-llm.txt` has no
 GPU support compiled in. Ask for offload anyway and you get a warning and CPU execution, rather
-than a silent mystery:
+than a silent mystery.
 
-```powershell
-pip install llama-cpp-python --force-reinstall --no-cache-dir --only-binary=:all: ^
-  --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu124
+Measured on a **GTX 1060 6 GB** (Pascal) with `qwen2.5-7b`, against an i7-4790K on the same box:
+
+| | tokens/s | to the first sentence |
+|---|---|---|
+| CPU, 8 threads | 1.0 | 17.3 s |
+| All 29 layers on the GPU | **14.4** | **1.3 s** |
+
+A 6 GB card holds the whole model at 4 bits — 4.4 GB of weights plus a small KV cache at the
+default 1024-token context — so nothing stays behind on the CPU. (The card's 192 GB/s of
+bandwidth would allow more; 14 tokens/s is what Pascal delivers on these 4-bit kernels.)
+
+Installing it on Linux took three steps, two of which are not obvious:
+
+```bash
+# 1. A CUDA build. NOT the newest: 0.3.19 crashes with SIGILL on any CPU
+#    without AVX-512 (Haswell, Zen 1/2, ...). 0.3.16 is built for a lower baseline.
+pip install "llama-cpp-python==0.3.16" --force-reinstall --no-cache-dir \
+  --only-binary=:all: --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu124
+
+# 2. The CUDA runtime itself. These wheels link against it but do not depend on
+#    it, and a driver-only machine has no libcudart. No sudo, no system toolkit:
+pip install nvidia-cuda-runtime-cu12 nvidia-cublas-cu12
 ```
 
-(`cu124` and `cu125` carry current builds for Windows and Linux x86_64; `cu121` is stuck on an old
-version. Match the tag to your CUDA runtime, not to your driver.)
+Step 3 — pointing the loader at those libraries — is handled in `llm.py`, which preloads them
+from site-packages before importing `llama_cpp`. Without that you would need `LD_LIBRARY_PATH`
+set on every invocation.
 
-A 6 GB card such as a **GTX 1060 6 GB** holds all of `qwen2.5-7b` at 4 bits: 4.4 GB of weights
-plus a tiny KV cache at the default 1024-token context, so nothing has to stay behind on the CPU.
-Pascal is supported by the CUDA 12.x runtimes those wheels are built against. Expect roughly
-20–30 tokens/s from that card's 192 GB/s of memory bandwidth — **estimated, not measured: there
-is no NVIDIA GPU in this project's test machine.** `ask` prints tokens/s, so one command tells
-you what your card actually does:
+Match the `cu…` tag to a CUDA runtime you can install, not to your driver version. Then confirm
+what your card actually does — `ask` prints tokens/s:
 
 ```bash
 python -m voice_interaction ask --llm-model qwen2.5-7b --gpu-layers -1 "erzaehl mir etwas ueber roboter"
@@ -581,6 +597,15 @@ transcript yourself before it reaches the model.
 **`--gpu-layers` printed a warning and ran on the CPU anyway.** The installed llama-cpp-python has
 no GPU support compiled in — the default wheel is CPU-only by design. Install a CUDA build, see
 "Bigger models need a GPU" above.
+
+**`Illegal instruction (core dumped)` from a CUDA build.** The wheel needs CPU instructions yours
+does not have: llama-cpp-python 0.3.19's CUDA wheels require AVX-512, which no Haswell, Zen 1 or
+Zen 2 chip has. Pin `llama-cpp-python==0.3.16` instead. (`grep -o 'avx512[a-z]*' /proc/cpuinfo`
+tells you which side of this you are on.)
+
+**`libcudart.so.12: cannot open shared object file`.** The CUDA wheel is installed but the CUDA
+runtime is not: `pip install nvidia-cuda-runtime-cu12 nvidia-cublas-cu12`. A machine with only
+the NVIDIA driver has no libcudart.
 
 **A bigger model gets killed, or swaps the machine to death.** `qwen2.5-7b` needs ~7.3 GB resident
 on the CPU. Offload it to a GPU, drop to `qwen2.5-1.5b`, or lower `VI_LLM_CONTEXT`.
