@@ -31,22 +31,23 @@ class EchoApp:
         threshold: float = None,
         silence_sec: float = None,
         show_partial: bool = True,
+        voice: str = None,
     ):
         self.language = cfg.get_language(lang)
         self.input_device = input_device
         self.output_device = output_device
         self.show_partial = show_partial
         self.recognizer = SpeechRecognizer(lang=self.language.code)
-        self.synthesizer = Synthesizer(lang=self.language.code)
+        self.synthesizer = Synthesizer(lang=self.language.code, voice=voice)
         self.endpointer = Endpointer(threshold=threshold, silence_sec=silence_sec)
 
     def _load(self) -> None:
-        models.require_language(self.language.code)
+        models.require_language(self.language.code, self.synthesizer.voice_name)
         started = time.monotonic()
         self.recognizer.load()
         self.synthesizer.load()
         print(f"Models loaded in {time.monotonic() - started:.1f}s "
-              f"(Vosk: {self.language.vosk_model}, Piper: {self.language.piper_voice})")
+              f"(Vosk: {self.language.vosk_model}, Piper: {self.synthesizer.voice_name})")
 
     def _calibrate(self, mic) -> None:
         if self.endpointer.threshold is not None:

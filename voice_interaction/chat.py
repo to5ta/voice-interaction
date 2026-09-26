@@ -108,7 +108,7 @@ def main(**kwargs) -> int:
 
 def ask(text: str, lang: str = None, llm_model: str = None, max_tokens: int = None,
         system_prompt: str = None, n_threads: int = None, gpu_layers: int = None,
-        speak: bool = False, output_device=None) -> int:
+        speak: bool = False, output_device=None, voice: str = None) -> int:
     """One question, one answer — no microphone involved.
 
     The way to check the chat mode over SSH on a headless robot, the fastest
@@ -127,8 +127,8 @@ def ask(text: str, lang: str = None, llm_model: str = None, max_tokens: int = No
     if speak:
         from .tts import Synthesizer
 
-        models.require_language(cfg.get_language(lang).code)
-        synthesizer = Synthesizer(lang=cfg.get_language(lang).code)
+        models.require_language(cfg.get_language(lang).code, voice)
+        synthesizer = Synthesizer(lang=cfg.get_language(lang).code, voice=voice)
         synthesizer.load()
 
     print(f"\n> {text}")

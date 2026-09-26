@@ -144,6 +144,7 @@ def cmd_echo(args) -> int:
         threshold=args.threshold,
         silence_sec=args.silence_sec,
         show_partial=not args.no_partial,
+        voice=args.voice,
     )
 
 
@@ -162,6 +163,7 @@ def cmd_chat(args) -> int:
         system_prompt=args.system,
         n_threads=args.threads,
         gpu_layers=args.gpu_layers,
+        voice=args.voice,
     )
 
 
@@ -178,6 +180,7 @@ def cmd_ask(args) -> int:
         gpu_layers=args.gpu_layers,
         speak=args.speak,
         output_device=args.output_device,
+        voice=args.voice,
     )
 
 
@@ -318,6 +321,8 @@ def build_parser() -> argparse.ArgumentParser:
     add_listen_opts(p)
     p.add_argument("--output-device", default=None, help="speaker index or name substring")
     p.add_argument("--no-partial", action="store_true", help="do not print live partial transcripts")
+    p.add_argument("--voice", default=None,
+                   help="override the language preset's Piper voice, e.g. de_DE-thorsten_emotional-medium")
     p.set_defaults(func=cmd_echo)
 
     p = sub.add_parser("chat", help="example app: speak, get an answer from a local LLM")
@@ -326,6 +331,8 @@ def build_parser() -> argparse.ArgumentParser:
     add_llm_opts(p)
     p.add_argument("--output-device", default=None, help="speaker index or name substring")
     p.add_argument("--no-partial", action="store_true", help="do not print live partial transcripts")
+    p.add_argument("--voice", default=None,
+                   help="override the language preset's Piper voice, e.g. de_DE-thorsten_emotional-medium")
     p.set_defaults(func=cmd_chat)
 
     p = sub.add_parser("ask", help="one question to the local LLM, no microphone")
@@ -334,6 +341,8 @@ def build_parser() -> argparse.ArgumentParser:
     add_llm_opts(p)
     p.add_argument("--speak", action="store_true", help="also say the answer out loud")
     p.add_argument("--output-device", default=None, help="speaker index or name substring")
+    p.add_argument("--voice", default=None,
+                   help="override the language preset's Piper voice, e.g. de_DE-thorsten_emotional-medium")
     p.set_defaults(func=cmd_ask)
 
     p = sub.add_parser("listen", help="speech to text only")

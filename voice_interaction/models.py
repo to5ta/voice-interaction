@@ -130,23 +130,29 @@ def ensure_language(code: str, force: bool = False) -> None:
     download_piper_voice(lang.piper_voice, force=force)
 
 
-def missing_for(code: str) -> list:
+def missing_for(code: str, voice: str = None) -> list:
     """Which model files are absent for a language — used to fail with a
-    helpful message instead of a stack trace deep inside an engine."""
+    helpful message instead of a stack trace deep inside an engine.
+
+    `voice` overrides the preset's, so a caller who asked for a different
+    voice is not told to download one it will never load."""
     lang = cfg.get_language(code)
+    voice = voice or lang.piper_voice
     missing = []
     if not cfg.vosk_path(lang.vosk_model).exists():
         missing.append(f"Vosk model '{lang.vosk_model}'")
-    onnx_path, config_path = cfg.piper_paths(lang.piper_voice)
+    onnx_path, config_path = cfg.piper_paths(voice)
     if not onnx_path.exists() or not config_path.exists():
-        missing.append(f"Piper voice '{lang.piper_voice}'")
+        missing.append(f"Piper voice '{voice}'")
     return missing
 
 
-def require_language(code: str) -> None:
-    missing = missing_for(code)
+def require_language(code: str, voice: str = None) -> None:
+    missing = missing_for(code, voice)
     if missing:
+        hint = (f"download --voice {voice}" if voice and voice != cfg.get_language(code).piper_voice
+                else f"download --lang {code}")
         raise SystemExit(
             f"Missing model(s) for '{code}': {', '.join(missing)}.\n"
-            f"Run: python -m voice_interaction download --lang {code}"
+            f"Run: python -m voice_interaction {hint}"
         )

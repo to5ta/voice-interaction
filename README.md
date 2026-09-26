@@ -399,9 +399,31 @@ To claw back headroom:
 Presets live in [`voice_interaction/config.py`](voice_interaction/config.py) — adding a language
 means adding one entry there with a Vosk model name and a Piper voice name.
 
-Alternative German voices (`--voice`, or change the preset): `de_DE-thorsten-low` (faster),
-`de_DE-eva_k-x_low` (21 MB, robotic), `de_DE-thorsten-high` (114 MB, slower),
-`de_DE-kerstin-low`, `de_DE-ramona-low`, `de_DE-karlsson-low`, `de_DE-pavoque-low`.
+### Using a different voice
+
+`--voice` overrides the preset's voice on `speak`, `echo`, `chat` and `ask --speak`. Download it
+once, then pass it:
+
+```bash
+python -m voice_interaction download --voice de_DE-kerstin-low
+python -m voice_interaction echo --voice de_DE-kerstin-low
+```
+
+For a permanent change, edit the preset in
+[`voice_interaction/config.py`](voice_interaction/config.py) instead of passing the flag
+everywhere. Note that voices differ in sample rate — the `-low` tier renders at 16 kHz, `-medium`
+at 22.05 kHz — which playback follows automatically.
+
+Alternative German voices: `de_DE-thorsten-low` (faster), `de_DE-eva_k-x_low` (21 MB, robotic),
+`de_DE-thorsten-high` (114 MB, slower), `de_DE-kerstin-low`, `de_DE-ramona-low`,
+`de_DE-karlsson-low`, `de_DE-pavoque-low`.
+
+**Multi-speaker voices are not usable yet.** Some models carry several speakers in one file —
+`de_DE-thorsten_emotional-medium` has 8 (amused, angry, disgusted, drunk, neutral, sleepy,
+surprised, whisper), `de_DE-mls-medium` has 236, `en_US-libritts_r-medium` has 904. They load and
+speak, but always as speaker 0: [`tts.py`](voice_interaction/tts.py) calls Piper without a
+`SynthesisConfig`, so there is nowhere to pass a `speaker_id`. Adding it would also expose speed
+(`length_scale`) and volume from the same struct.
 
 Bigger Vosk models (`vosk-model-de-0.21`, 1.9 GB) are considerably more accurate but do not fit
 a Nano's memory budget alongside everything else.
@@ -458,11 +480,19 @@ Measured on a **GTX 1060 6 GB** (Pascal) with `qwen2.5-7b`, against an i7-4790K 
 | | tokens/s | to the first sentence |
 |---|---|---|
 | CPU, 8 threads | 1.0 | 17.3 s |
-| All 29 layers on the GPU | **14.4** | **1.3 s** |
+| `--gpu-layers 20` | 4.7 | 3.6 s |
+| `--gpu-layers 24` | 5.9 | 2.5 s |
+| All layers on the GPU | **14.4** | **1.3 s** |
 
-A 6 GB card holds the whole model at 4 bits — 4.4 GB of weights plus a small KV cache at the
-default 1024-token context — so nothing stays behind on the CPU. (The card's 192 GB/s of
-bandwidth would allow more; 14 tokens/s is what Pascal delivers on these 4-bit kernels.)
+Full offload is worth more than the layer count suggests — whatever stays on the CPU dominates
+the total, so the last few layers cost more than the first twenty.
+
+**Whether all of it fits depends on what else uses the card.** The model needs 4.4 GB of weights
+plus a small KV cache at the default 1024-token context. That fits a 6 GB card only when the card
+is otherwise idle: on this desktop, Xorg, Firefox and Steam held 1.8 GB, leaving 4.26 GB free —
+and loading failed outright with `Failed to load model from file`, which is what running out of
+VRAM looks like from here. Either free the card, or drop to `--gpu-layers 24` and accept ~6
+tokens/s, or use `qwen2.5-1.5b` fully offloaded. A headless robot has the whole card.
 
 Installing it on Linux took three steps, two of which are not obvious:
 
@@ -606,6 +636,10 @@ tells you which side of this you are on.)
 **`libcudart.so.12: cannot open shared object file`.** The CUDA wheel is installed but the CUDA
 runtime is not: `pip install nvidia-cuda-runtime-cu12 nvidia-cublas-cu12`. A machine with only
 the NVIDIA driver has no libcudart.
+
+**`Failed to load model from file` with `--gpu-layers -1`.** Out of VRAM, usually because a
+desktop session is holding a chunk of it. `nvidia-smi` shows who; lower `--gpu-layers` until it
+fits, or use a smaller model.
 
 **A bigger model gets killed, or swaps the machine to death.** `qwen2.5-7b` needs ~7.3 GB resident
 on the CPU. Offload it to a GPU, drop to `qwen2.5-1.5b`, or lower `VI_LLM_CONTEXT`.
